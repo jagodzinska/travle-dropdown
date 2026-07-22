@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         Travle Stern-Dropdown
 // @namespace    https://github.com/jagodzinska/travle-dropdown
-// @version      1.0.0
-// @description  Stern (*) ins Suchfeld von Travle Weekly (travle.earth/challenge) tippen zeigt alle ratbaren Länder/Gebiete als Dropdown. Auswahl füllt das Suchfeld wie ein Original-Vorschlag; der Rateversuch wird wie gewohnt mit dem Guess-Button/Enter bestätigt (änderbar über AUTO_GUESS).
+// @version      1.1.0
+// @description  Stern (*) ins Suchfeld von Travle Weekly (travle.earth/challenge) tippen zeigt alle ratbaren Gebiete der aktuellen Challenge als Dropdown (Länder, Meere, ... je nach Woche). Auswahl füllt das Suchfeld wie ein Original-Vorschlag; der Rateversuch wird wie gewohnt mit dem Guess-Button/Enter bestätigt (änderbar über AUTO_GUESS).
 // @author       jago/claude
 // @license      MIT
 // @match        https://travle.earth/*
 // @icon         https://travle.earth/icons/favicon.ico
-// @run-at       document-idle
+// @run-at       document-start
 // @grant        none
 // ==/UserScript==
 
@@ -22,6 +22,61 @@
   // auch das Original-Dropdown von Travle; bestätigt wird mit Button/Enter.
   const AUTO_GUESS = false;
 
+  // ---- Aktiven Datensatz der Challenge mitlesen --------------------
+  // Jede Weekly-Challenge definiert ihren eigenen Datensatz (geojson/graph),
+  // z. B. regions.json (Länder), seas_regions.json (Meere/Ozeane) oder
+  // coastal_regions.json. Welcher gerade gilt, steht nur im Spielcode der
+  // Seite. Deshalb wird fetch() gehookt (@run-at document-start, läuft vor
+  // dem App-Code) und die zuletzt geladene Topologie-Datei unter
+  // /data/challenge/ ausgewertet – daraus ergibt sich exakt die ratbare
+  // Gebietsmenge der aktuellen Challenge, ohne die Wochenlogik der Seite
+  // nachbauen zu müssen. (Grenzfall: Wer per SPA-Navigation zwischen Weekly
+  // und Challenge-Archiv wechselt, ohne dass die Seite neu lädt, bekommt den
+  // zuletzt geladenen Datensatz; ein Reload der Seite behebt das.)
+  let capturedCodes = null; // Codes der zuletzt geladenen Challenge-Topologie
+  let capturedFile = null;
+
+  function topologyCodes(json) {
+    const obj = json && json.type === 'Topology' && json.objects;
+    const first = obj && Object.values(obj)[0];
+    if (!first || !Array.isArray(first.geometries)) return null;
+    const codes = [
+      ...new Set(
+        first.geometries
+          .map((g) => g?.properties?.ID)
+          .filter((id) => typeof id === 'string')
+          .map((id) => id.split('#')[0]),
+      ),
+    ];
+    return codes.length ? codes : null;
+  }
+
+  const origFetch = window.fetch;
+  window.fetch = function (input, init) {
+    const p = origFetch.apply(this, arguments);
+    try {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      const m = url.match(/\/data\/challenge\/([\w-]+)\.json(\?|$)/);
+      if (m && !m[1].includes('adjacency')) {
+        p.then((res) => {
+          if (!res.ok) return;
+          res
+            .clone()
+            .json()
+            .then((json) => {
+              const codes = topologyCodes(json);
+              if (codes) {
+                capturedCodes = codes;
+                capturedFile = m[1];
+              }
+            })
+            .catch(() => {});
+        }).catch(() => {});
+      }
+    } catch {}
+    return p;
+  };
+
   // Gilt für die Weekly Challenge und deren Archiv-Seiten. Beide nutzen den
   // Datensatz "challenge" (/data/challenge/, /locales/challenge/).
   const isWeekly = () => /^\/challenge\/?$/.test(location.pathname);
@@ -32,46 +87,53 @@
   const lang = () =>
     (document.cookie.match(/(?:^|;\s*)lang=([a-zA-Z-]+)/)?.[1] || 'en').toLowerCase();
 
-  // ---- Ratbare Gebiete + Namen von der Seite selbst laden ----------
-  // Die IDs kommen aus /data/challenge/regions.json (dieselbe Datei, die die
-  // Seite für Karte und Suchfeld lädt): "ZWE#1" -> Code "ZWE". Die Namen
-  // stehen in /locales/challenge/<lang>.json unter "regions" (en als
-  // Fallback, nicht jede Sprache übersetzt alle Gebiete). Dadurch muss hier
-  // nichts hartkodiert werden und neue Gebiete erscheinen automatisch.
-  let cache = null;
-  let cacheLang = null;
+  // ---- Anzeigenamen laden ------------------------------------------
+  // /locales/challenge/<lang>.json enthält unter "regions" die Namen ALLER
+  // Challenge-Datensätze (Länder, Meere, ...), z. B. AdrS -> Adriatisches
+  // Meer. en dient als Fallback, nicht jede Sprache übersetzt alles.
+  let namesCache = null;
+  let namesCacheLang = null;
 
-  function loadEntries() {
+  function loadNames() {
     const l = lang();
-    if (cache && cacheLang === l) return cache;
-    cacheLang = l;
-    cache = (async () => {
-      const codes = await fetch('/data/challenge/regions.json')
-        .then((r) => r.json())
-        .then((t) => [
-          ...new Set(
-            t.objects.regions.geometries.map((g) => g.properties.ID.split('#')[0]),
-          ),
-        ]);
-      const en = await fetch('/locales/challenge/en.json')
+    if (namesCache && namesCacheLang === l) return namesCache;
+    namesCacheLang = l;
+    namesCache = (async () => {
+      const en = await origFetch('/locales/challenge/en.json')
         .then((r) => (r.ok ? r.json() : {}))
         .then((j) => j.regions || {});
       let loc = {};
       if (l !== 'en') {
         try {
-          loc = await fetch(`/locales/challenge/${l}.json`)
+          loc = await origFetch(`/locales/challenge/${l}.json`)
             .then((r) => (r.ok ? r.json() : {}))
             .then((j) => j.regions || {});
         } catch {}
       }
-      return codes
-        .map((code) => ({ code, name: loc[code] || en[code] || code }))
-        .sort((a, b) => a.name.localeCompare(b.name, l));
+      return { ...en, ...loc };
     })();
-    cache.catch(() => {
-      cache = null; // bei Netzfehler beim nächsten Stern erneut versuchen
+    namesCache.catch(() => {
+      namesCache = null; // bei Netzfehler beim nächsten Stern erneut versuchen
     });
-    return cache;
+    return namesCache;
+  }
+
+  // Ratbare Gebiete der aktuellen Challenge. Notnagel, falls der fetch-Hook
+  // nichts mitbekommen hat (sollte mit document-start nicht passieren):
+  // regions.json, der Standard-Datensatz der meisten Wochen.
+  async function loadEntries() {
+    const l = lang();
+    let codes = capturedCodes;
+    if (!codes) {
+      codes = topologyCodes(
+        await origFetch('/data/challenge/regions.json').then((r) => r.json()),
+      );
+      if (!codes) throw new Error('no dataset');
+    }
+    const names = await loadNames();
+    return codes
+      .map((code) => ({ code, name: names[code] || code }))
+      .sort((a, b) => a.name.localeCompare(b.name, l));
   }
 
   // ---- Bereits geratene Gebiete aus dem localStorage ---------------
