@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Travle Stern-Dropdown
-// @namespace    https://github.com/jagodzinska/travle_dropdown
+// @namespace    https://github.com/jagodzinska/travle-dropdown
 // @version      1.0.0
 // @description  Stern (*) ins Suchfeld von Travle Weekly (travle.earth/challenge) tippen zeigt alle ratbaren Länder/Gebiete als Dropdown. Auswahl füllt das Suchfeld wie ein Original-Vorschlag; der Rateversuch wird wie gewohnt mit dem Guess-Button/Enter bestätigt (änderbar über AUTO_GUESS).
 // @author       jago/claude
